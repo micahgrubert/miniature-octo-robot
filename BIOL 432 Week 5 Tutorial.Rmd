@@ -4,12 +4,142 @@ output: html_notebook
 ---
 
 ```{r}
-plot(cars)
+SeqStats<- read.csv("./Data/BarcodePlateStats.csv")
+head(SeqStats)
+```
+Next, we will use an R package called sangerseqR inspect the chromatograph, sometimes called the ‘trace’ file. To make sense of the chromatograph you should review how Sanger sequencing works in the sequencing slides.
+
+The sangerseqR package is also part of the bioconductor and can be used to work with sanger sequence data.
+
+Load the library and read in the sequence for the target sample:
+
+```{r, echo=FALSE}
+library(sangerseqR)
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+```{r}
+ITS<- read.abif("./Data/DNA_Barcoding/1Ipos_F_P1815443_064.ab1")
+```
+We convert the ab1 file to a Sangerseq object using the sangerseq() function and inspect the structure of the data file
+```{r}
+ITSseq <- sangerseq(ITS)
+str(ITSseq)
+```
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+This is an example of a class object. You can see the @ to denote different elements of the object. This is similar to the way that $ denotes a column in a data.frame object. These are called ‘slots’ and can be used to subset the class object the same way $ can subset a data.frame object.
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+```{r}
+ITSseq@primarySeqID
+```
+
+```{r}
+ITSseq@primarySeq
+```
+
+Here is an overview of the main slot elements:
+    primarySeqID – Identification of the primary sequence
+    primarySeq – The most likely sequence based on the florescence pattern
+    secondarySeqID – Secondary sequence ID. Secondary calls may not be present, but can occur when there is a signal for more than one base pair
+    secondarySeq – The secondary sequence
+    traceMatrix – A matrix containing the normalized signals for A,C,G,T.
+    peakPosMatrix – A matrix containing the position of the maximum peak values for each base.
+    peakAmpMatrix A matrix containing the maximum peak amplitudes for each base.
+    
+  Now we can graph the trace.
+
+```{r}
+chromatogram(ITSseq, width = 250, height = 2, showcalls = "both")
+```
+You can use the trim5 and trim3 parameters to trim the unsequenced base pairs. We can use it with the width parameter to ‘zoom in’. Let’s look closer at the early part of the sequence:
+
+```{r}
+chromatogram(ITSseq, width = 50, height = 2, trim3=1100, showcalls = "both")
+```
+What do you notice about the early part of the sequence?
+
+For comparison, go back and try the same code with a ‘messy’ sequence, like 1I2_F_P1815443_048.ab1.
+
+Play around with the parameters until you have a good sequence. You may want to use the filename="graph.pdf"calcac parameter to save the graph to a pdf file that makes it easier to zoom in and inspect the graph. (There are N's at the beginning of the )
+
+A quick and easy method is to use the MakeBaseCalls() functions to ‘call’ the base pairs based on the strongest signals. This cuts out all the ambiguous peaks that probably represent noise in the fluoresence detectors.
+
+
+```{r}
+ITS2<- read.abif("./Data/DNA_Barcoding/1I2_F_P1815443_048.ab1")
+ITS2seq<- sangerseq(ITS2)
+
+ITS2seq@primarySeq
+```
+```{r}
+chromatogram(ITS2seq, width = 250, height = 2, showcalls = "both")
+
+chromatogram(ITSseq, width = 75, height = 2, trim3=800, showcalls = "both")
+```
+
+```{r}
+SeqX<-makeBaseCalls(ITSseq)
+print(SeqX)
+```
+Note that there is a primary and secondary sequence. Sometimes these are the same, but they can be different at a few locations if there is more than one peak at the same location in the chromatogram.
+
+**BLASTn**
+We are using genes with fairly low mutation rates, so BLASTn is appropriate for finding a species-level match.
+
+You can simply copy and paste the sequence above into the sequence search box and you are ready to go. However, this quickly becomes impractical when you have more than a few sentences. That’s were the command line of R (or Python or Unix) comes in handy. The annotate package from Bioconductor has some tools for conducting a BLAST search in R.
+
+Then load the library:
+```{r, echo = FALSE}
+library(annotate)
+```
+
+If we wanted to automate the process, we should create a script that works for one sequence, then put it into a for loop to iterate through multiple sequences. First, pull together all of the lines of code that we need to get to the sequence and put them together in one place:
+```{r}
+ITS<-read.abif("./Data/DNA_Barcoding/1Ipos_F_P1815443_064.ab1") # Read
+ITSseq <- sangerseq(ITS) # Extract
+SeqX<-makeBaseCalls(ITSseq) # Call 
+```
+
+You can use list.files() to return a vector of names of files in a particular folder.
+At this point, we have a string, but it’s not yet the right format for the BLAST search. We have to get it down to a single sequence in FASTA format. Looking at the structure of the SeqX S4 class:
+
+```{r}
+str(SeqX)
+```
+We can get the primary sequence with the slice:
+```{r}
+SeqX@primarySeq
+```
+compare with the original ‘raw’ sequence:
+```{r}
+ITSseq@primarySeq
+```
+Note the difference in length.
+
+Now we just pass the ‘trimmed’ sequence to our BLAST function. It will take a few seconds to run in the online database. It may seem like a long time, but think about what is happening here. Your sequence is uploaded to the BLAST interface, where it is then compared to several millions to billions of sequences.
+
+```{r}
+SeqXBlastDF<-blastSequences(paste(SeqX@primarySeq),as='data.frame')
+```
+
+Looking at the number of rows and the headings gives shows a lot of detail in the BLAST results:
+```{r}
+nrow(SeqXBlastDF)
+```
+
+```{r}
+head(SeqXBlastDF)
+```
+The object is the first 10 sequences that matched our ‘query’ sequence. Some of the key parameters are outlined on the BLAST glossary. The main columns are:
+
+Hit_accession – The accession code for each match
+Hit_len – The length of the matching sequence, in number of base pairs
+Hit_def – The name of the accession matching our query sequence
+Hsp_score – A score representing the strength of the match. HSP stands for ‘High-scoring Segment Pair’. The details of how the score is calculated are a bit complicated, but the key is that the higher number represents a stronger match.
+Hsp_evalue – An e-value is another way to measure the strength of the hit. It represents the probability of getting a match just by chance alone. Therefore smaller values generally indicate stronger matches.
+Hsp_gaps – The number of gaps between the query sequence and its match.
+Hsp_qseq – The query sequence (same for each hit)
+Hsp_hseq – The ‘hit’ sequence
+Inspecting the scores and evalues shows that all 10 hits are good matches. We may want to consider increasing the number of hits to retain by modifying parameters in the blastSequences() function.
+
+
 
